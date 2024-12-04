@@ -218,3 +218,4 @@ class HashedNgramDSIR(DSIR):
 
 
         self.log_diff = np.log(self.target_probs + 1e-8) - np.log(self.raw_probs + 1e-8)
+
