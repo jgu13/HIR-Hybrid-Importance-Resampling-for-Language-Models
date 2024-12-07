@@ -5,6 +5,9 @@ from nltk.tokenize import WordPunctTokenizer
 from nltk.tokenize import word_tokenize
 from nltk import ngrams as get_ngrams
 import numpy as np
+from sklearn.mixture import GaussianMixture
+from sentence_transformers import SentenceTransformer
+from pathlib import Path
 
 from data_selection.base import (
         DSIR,
@@ -112,6 +115,8 @@ class HashedNgramDSIR(DSIR):
         self.target_probs = None
         self.log_diff = None
         self.target_laplace_smoothing = target_laplace_smoothing
+        self.gmm_raw_log_prob = None
+        self.gmm_target_log_prob = None
 
     def featurizer(self, text: str) -> np.ndarray:
         return get_ngram_counts(text, tokenizer=self.tokenizer, num_buckets=self.num_buckets, n=self.ngrams)
@@ -165,7 +170,7 @@ class HashedNgramDSIR(DSIR):
 
         return counts
 
-    def fit_importance_estimator(self, num_tokens_to_fit: Union[str, int] = 'auto') -> None:
+    def fit_ng_importance_estimator(self, num_tokens_to_fit: Union[str, int] = 'auto') -> None:
         '''Fit the importance estimator.
         Args:
             num_tokens_to_fit: number of tokens to fit the raw dataset importance estimator on.
@@ -183,8 +188,9 @@ class HashedNgramDSIR(DSIR):
                 num_tokens_to_fit=num_tokens_to_fit,
                 parse_example_fn=self.raw_parse_example_fn,
                 load_dataset_fn=self.raw_load_dataset_fn)
+        
         self.raw_probs = self.raw_probs / self.raw_probs.sum()
-
+        print("NG raw probs shape = ", self.raw_probs.shape)
         if self.separate_targets:
             target_probs = []
             target_proportions = []
@@ -214,8 +220,149 @@ class HashedNgramDSIR(DSIR):
                     load_dataset_fn=self.target_load_dataset_fn)
             # smoothing
             self.target_probs = self.target_probs + self.target_laplace_smoothing
+            print("NG target probs shape = ", self.target_probs.shape)
             self.target_probs = self.target_probs / self.target_probs.sum()
 
-
         self.log_diff = np.log(self.target_probs + 1e-8) - np.log(self.raw_probs + 1e-8)
+    
+    def fit_gmm_importance_estimator(self, num_components=3, raw_text_emb_path=None, target_text_emb_path=None) -> None:
+        model = SentenceTransformer("all-MiniLM-L6-v2")
+        gmm = GaussianMixture(n_components=num_components, covariance_type='full', random_state=42)
 
+        print("We are here")
+        if raw_text_emb_path is None:
+            print("Enter 1")
+            sharded_datasets = self._get_virtually_sharded_datasets(self.raw_datasets)
+            
+            def job(args: Dict):
+                path = args["path"]
+                num_shards = args["num_shards"]
+                shard_idx = args["shard_idx"]
+                
+                # get raw dataset embeddings
+                parsed_text = []
+                raw_dataset = self.raw_load_dataset_fn(path)
+                iterator = _iterate_virtually_sharded_dataset(raw_dataset, num_shards, shard_idx)
+                for ex in tqdm(iterator, miniters=10000, maxinterval=1000000):
+                    if self.raw_parse_example_fn is not None:
+                        text = self.raw_parse_example_fn(ex)
+                    else:
+                        text = ex
+                    parsed_text.append(text)
+                return parsed_text
+            
+            all_raw_parsed_text = parallelize(job, sharded_datasets, self.num_proc)
+            # stack all_text_emb
+            all_raw_parsed_text = np.concatenate(all_raw_parsed_text, axis=0)
+            # encode using sentence transformer
+            raw_text_emb = model.encode(all_raw_parsed_text)
+            # save all_raw_text_emb
+            np.save(self.cache_dir / "raw_text_emb.npy", raw_text_emb)
+            print("Raw text embeddings = ", raw_text_emb)
+            # fit GMM to raw dataset embeddings
+            gmm_raw = gmm.fit(raw_text_emb)
+        else:
+            print("Enter 2")
+            # load raw text emb
+            raw_text_emb = np.load(raw_text_emb_path)
+            # fit GMM to raw dataset embeddings
+            gmm_raw = gmm.fit(raw_text_emb)
+            print("Raw GMM mean = ", gmm_raw.means_)
+            print("Raw GMM  covariances = ", gmm_raw.covariances_)
+        
+        # get target dataset embeddings
+        sharded_datasets = self._get_virtually_sharded_datasets(self.target_datasets)
+        
+        if target_text_emb_path is None:
+            def job(args: Dict):
+                path = args["path"]
+                num_shards = args["num_shards"]
+                shard_idx = args["shard_idx"]
+                
+                # get target dataset embeddings
+                parsed_text = []
+                target_dataset = self.target_load_dataset_fn(path)
+                iterator = _iterate_virtually_sharded_dataset(target_dataset, num_shards, shard_idx)
+                for ex in tqdm(iterator, miniters=10000, maxinterval=1000000):
+                    if self.target_parse_example_fn is not None:
+                        text = self.target_parse_example_fn(ex)
+                    else:
+                        text = ex
+                    parsed_text.append(text)
+                return parsed_text
+            
+            all_target_parsed_text = parallelize(job, sharded_datasets, self.num_proc)
+            # stack all_text_emb
+            all_target_parsed_text = np.concatenate(all_target_parsed_text, axis=0)
+            # encode parsed text into embeddings
+            target_text_emb = model.encode(all_target_parsed_text)
+            # save target text emb
+            np.save(self.cache_dir / "target_text_emb.npy", target_text_emb)
+            print("Target text embeddings = ", target_text_emb)
+            # fit GMM to target dataset embeddings
+            gmm_target = gmm.fit(target_text_emb)
+        else:
+            # load target_text_emb
+            target_text_emb = np.load(target_text_emb_path)
+            # fit GMM to target text embeddings
+            gmm_target = gmm.fit(target_text_emb)
+            print("Target GMM mean = ", gmm_target.means_)
+            print("Target GMM  covariances = ", gmm_target.covariances_)
+            
+        # get raw dataset log probability under respective gmm
+        gmm_raw_log_prob = gmm_raw.score_samples(raw_text_emb)
+        gmm_target_log_prob = gmm_target.score_samples(raw_text_emb)
+        
+        print("GMM raw log prob = ", gmm_raw_log_prob)
+        print("GMM target log prob = ", gmm_target_log_prob)
+        self.gmm_log_importance_weights = np.asarray(gmm_target_log_prob) + 1e-8 - (np.asarray(gmm_raw_log_prob) + 1e-8) #(N,)
+        
+        
+    def compute_hybrid_importance_weight(self, ng_importance_weights=None, alpha=0.5) -> None:
+        '''
+        Estimate hybrid importance weight for samples in raw datasets.
+        '''
+        
+        if ng_importance_weights is None:
+            sharded_datasets = self._get_virtually_sharded_datasets(self.raw_datasets)
+            def job(args: Dict):
+                path = args['path']
+                num_shards = args['num_shards']
+                shard_idx = args['shard_idx']
+                overall_idx = args['overall_idx']
+
+                log_importance_weights = []
+                perexample_metadata = []
+
+                dataset = self.raw_load_dataset_fn(path)
+                iterator = _iterate_virtually_sharded_dataset(dataset, num_shards, shard_idx)
+                for ex in tqdm(iterator, miniters=10000, maxinterval=1000000):
+                    if self.raw_parse_example_fn is not None:
+                        text = self.raw_parse_example_fn(ex)
+                    else:
+                        text = ex
+                    features = self.featurizer(text)
+                    log_importance_weights.append(self.importance_estimator(features))
+                    if perexample_metadata is not None:
+                        try:
+                            perexample_metadata.append(self.get_perexample_metadata(ex, features))
+                        except NotImplementedError:
+                            perexample_metadata = None
+
+                ng_log_importance_weights = np.asarray(log_importance_weights)
+                print("ng log importance weights shape = ", ng_log_importance_weights.shape)
+                return ng_log_importance_weights
+
+            ng_log_importance_weights = parallelize(job, sharded_datasets, self.num_proc)
+            print("Length of all ng log importance weights = ", len(ng_log_importance_weights))
+            ng_log_importance_weights = np.concatenate(ng_log_importance_weights, axis=0)
+            print("All log importance weights shape = ", ng_log_importance_weights.shape)
+            print("All gmm log importance weights shape = ", self.gmm_log_importance_weights.shape)
+            print("NG log importance weights", ng_log_importance_weights)
+            print("GMM log importance weights", self.gmm_log_importance_weights)
+            self.hybrid_log_importance_weights = alpha * (ng_log_importance_weights + 1e-8) + (1 - alpha) * (self.gmm_log_importance_weights + 1e-8)
+            print("Hybrid log importance weights = ", self.hybrid_log_importance_weights)
+            save_path = self.cache_dir / "hybrid_importance_weights.npy"
+            np.save(save_path, self.hybrid_log_importance_weights)
+        # else:
+            

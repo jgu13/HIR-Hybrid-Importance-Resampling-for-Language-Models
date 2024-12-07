@@ -130,7 +130,7 @@ class DSIR():
         """
         return NotImplementedError
 
-    def fit_importance_estimator(self) -> None:
+    def fit_ng_importance_estimator(self) -> None:
         """Fits parameters needed to run self.importance_estimator.
 
         Args:
@@ -159,14 +159,15 @@ class DSIR():
                 else:
                     text = ex
                 features = self.featurizer(text)
-                log_importance_weights.append(self.importance_estimator(features))
+                log_importance_weights.append(self.importance_estimator(features)) # (1,1)
                 if perexample_metadata is not None:
                     try:
                         perexample_metadata.append(self.get_perexample_metadata(ex, features))
                     except NotImplementedError:
                         perexample_metadata = None
 
-            log_importance_weights = np.asarray(log_importance_weights)
+            log_importance_weights = np.asarray(log_importance_weights) # (N,1)
+            print("Shape of log importance weights = ", log_importance_weights.shape)
             save_path = Path(self.log_importance_weights_dir) / f"{overall_idx}.npy"
             np.save(str(save_path), log_importance_weights)
             if perexample_metadata is not None:

@@ -138,3 +138,6 @@ logs/
 
 # cache
 dsir_cache/
+
+# any data file
+*.zst

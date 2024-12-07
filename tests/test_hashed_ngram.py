@@ -264,7 +264,7 @@ def test_resample_virtual_sharding():
 
     assert len(dsir_obj._get_virtually_sharded_datasets(raw_datasets)) == 15
 
-    dsir_obj.fit_importance_estimator()
+    dsir_obj.fit_ng_importance_estimator()
 
     dsir_obj.compute_importance_weights()
 
@@ -308,7 +308,7 @@ def test_smoothing(dsir_obj):
             ngrams=2,
             num_buckets=10000,
             target_laplace_smoothing=smoothing_param)
-    dsir_obj_2.fit_importance_estimator()
+    dsir_obj_2.fit_ng_importance_estimator()
 
     target_probs_2 = dsir_obj_2.target_probs
 

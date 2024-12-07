@@ -10,7 +10,7 @@ data = np.random.randn(N, D)
 num_components = 3  
 gmm = GaussianMixture(n_components=num_components, covariance_type='full', random_state=42)
 
-# Git GMM to N-by-D matrix
+# fit GMM to N-by-D matrix
 gmm.fit(data)
 
 print("Mean of gassian mixture:")
