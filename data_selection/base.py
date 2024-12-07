@@ -12,7 +12,7 @@ import numpy as np
 from tqdm import tqdm
 
 from data_selection.utils import parallelize
-from data_selection import __version__
+from .version import __version__
 
 
 def default_load_dataset_fn(path: str) -> Iterable[Dict]:

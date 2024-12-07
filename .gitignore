@@ -141,3 +141,7 @@ dsir_cache/
 
 # any data file
 *.zst
+
+# output files
+*.out
+*.log
