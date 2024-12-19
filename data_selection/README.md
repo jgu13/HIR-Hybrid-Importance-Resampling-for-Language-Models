@@ -1,8 +1,8 @@
 # Usage
-In general, DSIR aims to select data from the raw dataset that matches the feature distribution of the target data. Thus, the choice of feature space and importance estimator on this feature space can change the behavior of DSIR for different use-cases. Extending the base DSIR class in `base.py` is simple - follow the example in `hashed_ngram_dsir.py`.
+In general, HIR aims to select data from the raw dataset that matches the feature distribution of the target data. Thus, the choice of feature space and importance estimator on this feature space can change the behavior of HIR for different use-cases. Extending the base DSIR class in `base.py` is simple - follow the example in `hashed_ngram_dsir.py`.
 
 ### class data_selection.DSIR
-Base class for DSIR.
+Base class for HIR.
 
 - `raw_datasets`: List of data paths
 - `target_datasets`: List of data paths

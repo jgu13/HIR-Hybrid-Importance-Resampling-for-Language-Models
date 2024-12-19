@@ -48,7 +48,7 @@ class PretrainTrainer:
 
         if self.accelerator.is_main_process:
            unwrapped_model = self.accelerator.unwrap_model(self.model)
-           unwrapped_model.save_pretrained(save_path, save_function=self.accelerator.save)
+           unwrapped_model.save_pretrained(save_path, save_function=self.accelerator.save, safe_serialization=False)
 
     def _save_trained(self, save_path=None):
         if save_path is None:

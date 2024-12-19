@@ -247,7 +247,7 @@ def resample(ds_dir, cache_ds_dir, num_to_retrieve):
 
     if args.ds_name == 'wiki_and_books':
         # compute the wikipedia and book masks and filter out
-        filter_domains = ['Wikipedia (en)', 'BookCorpus2', 'Books3', 'Gutenberg (PG-19)']
+        filter_domains = ['Wikipedia (en)', 'Gutenberg (PG-19)']
         domain_to_idxs = compute_domain_idxs(filter_domains)
         for domain, idxs in domain_to_idxs.items():
             # ignore wiki and books during retrieval
@@ -359,9 +359,9 @@ if __name__ == "__main__":
 
     #    XXX: if using fewer subsets of the Pile, please change the subsets list and the total_lines variable.
     #    We provde an example below (note that using linecount can take a long time for large numbers of subsets - we suggest running this once and hardcoding the number):
-    # subsets = ['00']
-    # total_lines = sum([linecount(f'{args.pile_path}/{chunked_dir}/{subset}_128/{subset}_128.json') for subset in subsets])
-    # dsname_to_args['pile']['total_lines'] = total_lines
+    subsets = ['00']
+    total_lines = sum([linecount(f'{args.pile_path}/{chunked_dir}/{subset}_128/{subset}_128.json') for subset in subsets])
+    dsname_to_args['pile']['total_lines'] = total_lines
 
     dsname_to_args['pile'].update(
         {'task_name': [f'{args.pile_path}/{chunked_dir}/{subset}_128/{subset}_128.json' for subset in subsets],

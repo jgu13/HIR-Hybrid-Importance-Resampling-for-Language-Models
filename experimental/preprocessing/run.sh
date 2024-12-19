@@ -1,7 +1,8 @@
 #!/bin/bash
 source config.sh
 
-source ${VIRTUAL_ENV}/bin/activate
+source $(conda info --base)/etc/profile.d/conda.sh
+conda activate HIR
 
 mkdir -p $CACHE
 export HF_HOME=$CACHE
@@ -12,6 +13,6 @@ export TORCH_EXTENSIONS_DIR=$CACHE
 
 ARGS=$1
 
-python preprocessing/reformat_and_chunk_data.py ${ARGS}
+python reformat_and_chunk_data.py ${ARGS}
 
 

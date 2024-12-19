@@ -9,6 +9,7 @@ from sklearn.mixture import GaussianMixture
 from sentence_transformers import SentenceTransformer
 from pathlib import Path
 import os
+import joblib
 
 from data_selection.base import (
         DSIR,
@@ -65,6 +66,21 @@ def fit_gmm_step(gmm, data_chunk, n_init=1, n_components=3, covariance_type="dia
                         precisions_init=gmm.precisions_)
     gmm_new.fit(data_chunk)
     return gmm_new
+
+def load_chunk_size_samples(folder_path, chunk_size=10, suffix=".npy"):
+    # Get all .npy files in the folder
+    files = [os.path.join(folder_path, file) for file in os.listdir(folder_path) if file.endswith(suffix)]
+    files.sort()
+
+    # Iterate over files in chunks
+    for i in range(0, len(files), chunk_size):
+        chunk_files = files[i:i+chunk_size]
+        # Load all files in the current chunk
+        chunk_data = [np.load(file) for file in chunk_files]
+        # Combine chunk_data
+        chunk_data = np.concatenate(chunk_data, axis=0)
+        # print("chunk data shape = ", chunk_data.shape)
+        yield chunk_data
 
 class HashedNgramDSIR(DSIR):
     """DSIR with hashed n-gram features."""
@@ -129,11 +145,14 @@ class HashedNgramDSIR(DSIR):
         self.target_laplace_smoothing = target_laplace_smoothing
         self.gmm_raw_log_prob = None
         self.gmm_target_log_prob = None
+        self.gmm_log_importance_weights = None
 
     def featurizer(self, text: str) -> np.ndarray:
         return get_ngram_counts(text, tokenizer=self.tokenizer, num_buckets=self.num_buckets, n=self.ngrams)
 
-    def importance_estimator(self, features: np.ndarray) -> Union[float, np.ndarray]:
+    def importance_estimator(self, features: np.ndarray, log_diff_path=None) -> Union[float, np.ndarray]:
+        if log_diff_path:
+            self.log_diff = np.load(log_diff_path)
         return np.dot(self.log_diff, features)
 
     def get_perexample_metadata(self, ex: Dict, features: np.ndarray) -> int:
@@ -194,7 +213,7 @@ class HashedNgramDSIR(DSIR):
             num_tokens_to_fit = 100000 * self.num_buckets
         elif num_tokens_to_fit == 'all':
             num_tokens_to_fit = None
-
+        print("Fit ng importance estimator to raw dataset: ")
         self.raw_probs = self._fit_bow(
                 self.raw_datasets,
                 num_tokens_to_fit=num_tokens_to_fit,
@@ -225,6 +244,7 @@ class HashedNgramDSIR(DSIR):
             self.target_probs = np.asarray(target_probs)
 
         else:
+            print("Fit NG importance estimator to target dataset: ")
             self.target_probs = self._fit_bow(
                     self.target_datasets,
                     num_tokens_to_fit=None,  # fit on all tokens for target
@@ -236,13 +256,19 @@ class HashedNgramDSIR(DSIR):
             self.target_probs = self.target_probs / self.target_probs.sum()
 
         self.log_diff = np.log(self.target_probs + 1e-8) - np.log(self.raw_probs + 1e-8)
+        save_path = self.cache_dir / "ng_log_diff.npy"
+        print(f"Save ng log difference to {save_path}")
+        np.save(save_path , self.log_diff)
     
     def fit_gmm_importance_estimator(self, 
                                      chunk_size=10, 
                                      raw_max_samples: Union[str, int] = "all", 
                                      target_max_samples: Union[str, int] = "all", 
                                      raw_text_emb_path=None, 
-                                     target_text_emb_path=None) -> None:
+                                     target_text_emb_path=None, 
+                                     checkpoint_dir=None,
+                                     gmm_raw_checkpoint_path=None,
+                                     gmm_target_checkpoint_path=None) -> None:
         '''
         Fit GMM models on raw and target dataset iteratively on chunks of text embeddings. 
         Compute NN importance weights.
@@ -256,16 +282,18 @@ class HashedNgramDSIR(DSIR):
         raw_text_emb_path: dirname to raw text embeddings
         target_text_emb_path: dirname to target text embeddings
         '''
-        model = SentenceTransformer("all-MiniLM-L6-v2")
         
         gmm_raw_kwargs = {"n_components":1000, "covariance_type": "diag", "random_state": 42}
         gmm_target_kwargs = {"n_components":50, "covariance_type": "diag", "random_state": 42}
         gmm_raw = GaussianMixture(**gmm_raw_kwargs)
         gmm_target = GaussianMixture(**gmm_target_kwargs)
+        raw_text_emb_path = Path(raw_text_emb_path)
+        target_text_emb_path = Path(target_text_emb_path)
         
         # fit gmm on raw dataset
         # save raw dataset text embeddings in chunks if not provided
         if raw_text_emb_path is None:
+            model = SentenceTransformer("all-MiniLM-L6-v2")
             sharded_datasets = self._get_virtually_sharded_datasets(self.raw_datasets)
             raw_text_emb_path = self.cache_dir / "raw text embeddings"
             if not os.path.isdir(raw_text_emb_path):
@@ -289,43 +317,45 @@ class HashedNgramDSIR(DSIR):
                     parsed_text.append(text)
                     if len(parsed_text) == chunk_size:
                         raw_text_emb = model.encode(parsed_text)
-                        np.save(raw_text_emb_path / f"{chunk}.npy", raw_text_emb)
+                        np.save(raw_text_emb_path / f"raw_text_emb{chunk}.npy", raw_text_emb)
                         # clear current chunk
                         parsed_text.clear()
                         chunk += 1
                 if parsed_text:
                     raw_text_emb = model.encode(parsed_text)
-                    np.save(raw_text_emb_path / f"{chunk}.npy", raw_text_emb)
+                    np.save(raw_text_emb_path / f"raw_text_emb{chunk}.npy", raw_text_emb)
                     chunk += 1
                 return
             parallelize(job, sharded_datasets, self.num_proc)
         
-        # fit gmm on raw dataset iteratively 
-        if raw_max_samples == "all":
-            # if raw_max_samples is "all", use all the chunks found in the raw_text_emb_path
-            n_chunks = len(os.listdir(raw_text_emb_path))
+        if gmm_raw_checkpoint_path:
+            print(f"Load gmm_raw from {gmm_raw_checkpoint_path}")
+            gmm_raw = joblib.load(gmm_raw_checkpoint_path)
         else:
-            n_chunks = raw_max_samples // chunk_size # max samples controls how many chunks to be load
-        chunk = 0
-        # print("chunk = ", chunk)
-        raw_text_emb_chunk = np.load(raw_text_emb_path / f"{chunk}.npy")
-        target_size = 1000
-        repeat_times = target_size // raw_text_emb_chunk.shape[0] + 1
-        raw_text_emb_chunk = np.tile(raw_text_emb_chunk, (repeat_times, 1))[:target_size, :]
-        # print(f"raw text embedding chunk {chunk} = ", raw_text_emb_chunk)
-        gmm_raw = gmm_raw.fit(raw_text_emb_chunk)
-        # print("raw GMM means = ", gmm_raw.means_)
-        for chunk in range(1, n_chunks):
-            # print("chunk = ", chunk)
-            # load raw text emb
-            raw_text_emb_chunk = np.load(raw_text_emb_path / f"{chunk}.npy")
-            raw_text_emb_chunk = np.tile(raw_text_emb_chunk, (repeat_times, 1))[:target_size, :]
-            # print(f"raw text embedding chunk {chunk} = ", raw_text_emb_chunk)
-            # fit GMM to raw dataset embeddings
-            gmm_raw = fit_gmm_step(gmm_raw, raw_text_emb_chunk, **gmm_raw_kwargs)
-            # print("raw GMM means = ", gmm_raw.means_)
-            # clear the current chunk before moving to the next
-            del raw_text_emb_chunk
+            # fit gmm on raw dataset iteratively 
+            print("Fit Gmm on raw dataset: ")
+            if raw_max_samples == "all":
+                # if raw_max_samples is "all", use all the chunks found in the raw_text_emb_path
+                n_chunks = len(os.listdir(raw_text_emb_path))
+            else:
+                n_chunks = raw_max_samples // chunk_size # max samples controls how many chunks to be load
+            chunk = 0
+            print("Raw dataset chunk = ", chunk)
+            raw_text_emb_chunk = next(load_chunk_size_samples(raw_text_emb_path, chunk_size=chunk_size))
+            gmm_raw = gmm_raw.fit(raw_text_emb_chunk)
+            for chunk in range(1, n_chunks):
+                # load raw text emb
+                raw_text_emb_chunk = next(load_chunk_size_samples(raw_text_emb_path, chunk_size=chunk_size))    
+                # fit GMM to raw dataset embeddings
+                gmm_raw = fit_gmm_step(gmm_raw, raw_text_emb_chunk, **gmm_raw_kwargs)
+                if chunk % 10 == 0:
+                    print("Raw dataset chunk = ", chunk)
+                    # save gmm_raw intermittently
+                    joblib.dump(gmm_raw, os.path.join(checkpoint_dir, f"gmm_raw_{chunk}.pkl"))
+                # clear the current chunk before moving to the next
+                del raw_text_emb_chunk
+            # save final fitted gmm_raw
+            joblib.dump(gmm_raw, os.path.join(checkpoint_dir, f"gmm_raw_final.pkl"))
         
         # fit gmm on target dataset
         # save chunks of target dataset embeddings if not provided
@@ -354,41 +384,45 @@ class HashedNgramDSIR(DSIR):
                     parsed_text.append(text)
                     if len(parsed_text) == chunk_size:
                         target_text_emb = model.encode(parsed_text)
-                        np.save(target_text_emb_path / f"{chunk}.npy", target_text_emb)
+                        np.save(target_text_emb_path / f"raw_text_emb{chunk}.npy", target_text_emb)
                         parsed_text.clear()
                         chunk += 1
                 # if there are parsed text left, save embeddings of the left text
                 if parsed_text:
                     target_text_emb = model.encode(parsed_text)
-                    np.save(target_text_emb_path / f"{chunk}.npy", target_text_emb)
+                    np.save(target_text_emb_path / f"raw_text_emb{chunk}.npy", target_text_emb)
                     chunk += 1
                 return
             parallelize(job, sharded_datasets, self.num_proc)
 
-        # fit gmm iteratively
-        if target_max_samples == "all":
-            # if target_max_samples is "all", use all the chunks found in the target_text_emb_path
-            n_chunks = len(os.listdir(target_text_emb_path))
+        if gmm_target_checkpoint_path:
+            print(f"Load gmm target from {gmm_target_checkpoint_path}")
+            gmm_target = joblib.load(gmm_target_checkpoint_path)
         else:
-            n_chunks = target_max_samples // chunk_size # max samples controls how many chunks to be loaded
-        chunk = 0
-        target_text_emb_chunk = np.load(os.path.join(target_text_emb_path, f"{chunk}.npy"))
-        target_size = 50
-        repeat_times = target_size // target_text_emb_chunk.shape[0] + 1
-        target_text_emb_chunk = np.tile(target_text_emb_chunk, (repeat_times, 1))[:target_size, :]
-        gmm_target = gmm_target.fit(target_text_emb_chunk)
-        # print("Target GMM means = ", gmm_target.means_)
-        for chunk in range(1, n_chunks):
-            # print("Chunk = ", chunk)
-            # load target text emb
-            target_text_emb_chunk = np.load(os.path.join(target_text_emb_path, f"{chunk}.npy"))
-            target_text_emb_chunk = np.tile(target_text_emb_chunk, (repeat_times, 1))[:target_size, :]
-            # print(f"target text embedding chunk {chunk}: ", target_text_emb_chunk)
-            # fit GMM to target dataset embeddings
-            gmm_target = fit_gmm_step(gmm_target, target_text_emb_chunk, **gmm_target_kwargs)
-            # print("Target GMM means = ", gmm_target.means_)
-            # clear the current chunk before moving to the next
-            del target_text_emb_chunk
+            # fit gmm iteratively
+            print("Fit Gmm on target dataset: ")
+            if target_max_samples == "all":
+                # if target_max_samples is "all", use all the chunks found in the target_text_emb_path
+                n_chunks = len(os.listdir(target_text_emb_path))
+            else:
+                n_chunks = target_max_samples // chunk_size # max samples controls how many chunks to be loaded
+            chunk = 0
+            print("target dataset chunk = ", chunk)
+            target_text_emb_chunk = next(load_chunk_size_samples(target_text_emb_path, chunk_size=chunk_size))
+            gmm_target = gmm_target.fit(target_text_emb_chunk)
+            for chunk in range(1, n_chunks):
+                # load target text emb
+                target_text_emb_chunk = next(load_chunk_size_samples(target_text_emb_path, chunk_size=chunk_size))
+                # fit GMM to target dataset embeddings
+                gmm_target = fit_gmm_step(gmm_target, target_text_emb_chunk, **gmm_target_kwargs)
+                if chunk % 10 == 0:
+                    print("target dataset chunk = ", chunk)
+                    # save gmm_raw intermittently
+                    joblib.dump(gmm_target, os.path.join(checkpoint_dir, f"gmm_target_{chunk}.pkl"))
+                # clear the current chunk before moving to the next
+                del target_text_emb_chunk
+            # save final fitted gmm_raw
+            joblib.dump(gmm_target, os.path.join(checkpoint_dir, f"gmm_target_final.pkl"))
         
         # get raw dataset log probability under respective gmm
         gmm_raw_log_prob_l = []
@@ -400,7 +434,7 @@ class HashedNgramDSIR(DSIR):
             n_chunks = raw_max_samples // chunk_size # max samples controls how many chunks to be load
         for chunk in range(n_chunks):
             # load raw text emb
-            raw_text_emb_chunk = np.load(os.path.join(raw_text_emb_path, f"{chunk}.npy"))
+            raw_text_emb_chunk = next(load_chunk_size_samples(raw_text_emb_path, chunk_size=chunk_size))
             # get log likelihood of the chunk
             gmm_raw_log_prob_chunk = gmm_raw.score_samples(raw_text_emb_chunk)
             gmm_target_log_prob_chunk = gmm_target.score_samples(raw_text_emb_chunk)
@@ -416,16 +450,19 @@ class HashedNgramDSIR(DSIR):
         print("GMM target log prob = ", gmm_target_log_prob)
         self.gmm_log_importance_weights = np.asarray(gmm_target_log_prob) + 1e-8 - (np.asarray(gmm_raw_log_prob) + 1e-8) #(N,)
         print("GMM log importance weights = ", self.gmm_log_importance_weights)
+        # save gmm log importance weights
+        print("Save gmm log importance weights to ", self.cache_dir / "gmm_log_importance_weights.npy")
+        np.save(self.cache_dir / "gmm_log_importance_weights.npy", self.gmm_log_importance_weights)
         
-        
-    def compute_hybrid_importance_weight(self, ng_importance_weights_path=None, alpha=0.5, save_path=None) -> None:
+    def compute_hybrid_importance_weight(self, log_diff_path=None, ng_log_importance_weights_path=None, gmm_log_importance_weights_path=None, alpha=0.5, save_path=None) -> None:
         '''
         Estimate hybrid importance weight for samples in raw datasets.
         ng_importance_weights_path: path to pre-calculated NG importance weights
         alpha: proportion of NG importance weights
         '''
         
-        if ng_importance_weights_path is None:
+        if ng_log_importance_weights_path is None:
+            max_length =  1420000
             sharded_datasets = self._get_virtually_sharded_datasets(self.raw_datasets)
             def job(args: Dict):
                 path = args['path']
@@ -438,16 +475,20 @@ class HashedNgramDSIR(DSIR):
 
                 dataset = self.raw_load_dataset_fn(path)
                 iterator = _iterate_virtually_sharded_dataset(dataset, num_shards, shard_idx)
-                for ex in tqdm(iterator, miniters=10000, maxinterval=1000000):
+                for i, ex in enumerate(tqdm(iterator, miniters=10000, maxinterval=1000000)):
+                    if i == max_length:
+                        break
                     if self.raw_parse_example_fn is not None:
                         text = self.raw_parse_example_fn(ex)
                     else:
                         text = ex
                     features = self.featurizer(text)
-                    log_importance_weights.append(self.importance_estimator(features))
+                    feature_weights = self.importance_estimator(features, log_diff_path=log_diff_path)
+                    log_importance_weights.append(feature_weights)
+                    np.save(self.cache_dir / "ng_log_importance_weights" / f"text_{i}.npy", feature_weights)
                     if perexample_metadata is not None:
                         try:
-                            perexample_metadata.append(self.mple_metget_perexaadata(ex, features))
+                            perexample_metadata.append(self.get_perexample_metadata(ex, features))
                         except NotImplementedError:
                             perexample_metadata = None
 
@@ -457,12 +498,21 @@ class HashedNgramDSIR(DSIR):
             ng_log_importance_weights = parallelize(job, sharded_datasets, self.num_proc)
             ng_log_importance_weights = np.concatenate(ng_log_importance_weights, axis=0)
             print("NG log importance weights", ng_log_importance_weights)
+            save_ng_weights_path = os.path.join(self.cache_dir / "ng_log_importance_weights" / f"ng_log_importance_weights_{max_length}.npy")
+            np.save(save_ng_weights_path, ng_log_importance_weights)
         else:
-            ng_log_importance_weights = np.load(ng_importance_weights_path)
+            ng_log_importance_weights = np.load(ng_log_importance_weights_path)
+            print("ng_log_importance_weights shape = ", ng_log_importance_weights.shape)
         
+        if self.gmm_log_importance_weights is None:
+            if gmm_log_importance_weights_path:
+                self.gmm_log_importance_weights = np.load(gmm_log_importance_weights_path)
+                print("GMM log importance weights shape = ", self.gmm_log_importance_weights.shape)
+            else:
+                raise ValueError(f"self.gmm_log_importance_weights is {self.gmm_log_importance_weights}!")
+            
         self.hybrid_log_importance_weights = alpha * (ng_log_importance_weights + 1e-8) + (1 - alpha) * (self.gmm_log_importance_weights + 1e-8)
         print("Hybrid log importance weights = ", self.hybrid_log_importance_weights)
-        print("Hybrid importance weights = ", np.exp(self.hybrid_log_importance_weights))
         save_path = save_path if save_path else self.cache_dir / "hybrid_importance_weights.npy"
         np.save(save_path, self.hybrid_log_importance_weights)
             

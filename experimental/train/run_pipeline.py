@@ -334,7 +334,7 @@ def preprocess(args, raw_datasets, tokenizer, logger, preprocessed_cache):
                     tokenize_function,
                     batched=True,
                     batch_size=100,
-                    num_proc=num_cpus//2,
+                    num_proc=num_cpus//4,
                     remove_columns=raw_datasets_shard.column_names,
                     desc="Running tokenizer on dataset line_by_line",
                 )

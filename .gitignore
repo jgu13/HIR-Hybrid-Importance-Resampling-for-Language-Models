@@ -109,7 +109,6 @@ venv/
 ENV/
 env.bak/
 venv.bak/
-dsir_venv/
 
 # Spyder project settings
 .spyderproject
@@ -138,10 +137,19 @@ logs/
 
 # cache
 dsir_cache/
+cache_dir/
+experimental/chache_dir/
 
 # any data file
 *.zst
+*.npy
+*jsonl
+outputdir/
+Pile/
 
 # output files
 *.out
 *.log
+
+# model checkpoints
+*.pkl

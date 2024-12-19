@@ -4,7 +4,8 @@ set -x
 
 source config.sh
 
-source ${VIRTUAL_ENV}/bin/activate
+source $(conda info --base)/etc/profile.d/conda.sh
+conda activate HIR
 mkdir -p $CACHE
 export HF_HOME=$CACHE
 export TRANSFORMERS_CACHE=$CACHE

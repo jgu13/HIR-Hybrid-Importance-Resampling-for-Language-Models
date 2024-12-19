@@ -183,7 +183,7 @@ class DSIR():
         """Return a boolean array of examples that pass the filter according to the metadata."""
         return NotImplementedError
 
-    def resample(self, out_dir: str, num_to_sample: int, cache_dir: str = None, top_k: bool = False) -> None:
+    def resample(self, log_importance_weights_path, out_dir: str, num_to_sample: int, cache_dir: str = None, top_k: bool = False) -> None:
         """Resample raw dataset according to importance weights.
 
         Args:
@@ -203,14 +203,14 @@ class DSIR():
 
         # load log importance weights
         log_importance_weights_ls = [
-                np.load(str(Path(self.log_importance_weights_dir) / f'{shard_params["overall_idx"]}.npy'), mmap_mode='r')
+                np.load(log_importance_weights_path, mmap_mode='r')
                 for shard_params in sharded_raw_datasets]
         concat_log_importance_weights = np.concatenate(log_importance_weights_ls, axis=0)
 
         # filter examples by metadata first
         if Path(self.perexample_metadata_dir).exists():
             metadata_ls = [
-                    np.load(str(Path(self.perexample_metadata_dir) / f'{shard_params["overall_idx"]}.npy'), mmap_mode='r')
+                    np.load(str(Path(self.perexample_metadata_dir) / f'hybrid_log_importance_weights.npy'), mmap_mode='r')
                     for shard_params in sharded_raw_datasets]
             concat_metadata = np.concatenate(metadata_ls, axis=0)
             global_mask = self.perexample_metadata_filter(concat_metadata)
@@ -240,7 +240,7 @@ class DSIR():
 
             # Take top-k
             nonzero_idxs = np.where(global_mask)[0]
-            chosen_idxs = np.argpartition(-curr_log_importance_weights, curr_num_to_sample)[:curr_num_to_sample]
+            chosen_idxs = np.argpartition(-curr_log_importance_weights, curr_num_to_sample)[:curr_num_to_sample] # top k selection of `curr_num_to_sample` samples
             chosen_idxs = nonzero_idxs[chosen_idxs]
 
             chosen_mask[chosen_idxs] = True
@@ -256,6 +256,7 @@ class DSIR():
         masks = []
         start_idx = 0
         for log_importance_weights in log_importance_weights_ls:
+            print("length of log importance weights = ", len(log_importance_weights))
             end_idx = start_idx + len(log_importance_weights)
             masks.append(chosen_mask[start_idx:end_idx])
             start_idx = end_idx
@@ -274,6 +275,8 @@ class DSIR():
                     with open(in_path, 'r') as f_in:
                         iterator = _iterate_virtually_sharded_dataset(f_in, num_shards, shard_idx)
                         for line in tqdm(iterator, miniters=10000, maxinterval=1000000):
+                            if curr_idx >= len(mask):
+                                return
                             if len(line) == 0:
                                 continue
 
@@ -290,7 +293,7 @@ class DSIR():
                             f.write(json.dumps(ex) + '\n')
 
         sharded_raw_datasets = self._get_virtually_sharded_datasets(self.raw_datasets)
-        args = [{'out_path': cache_dir / f"{i}.jsonl",
+        args = [{'out_path': cache_dir / f"selected_samples_{i}.jsonl",
                  'in_path': shard_params['path'],
                  'mask': masks[i],
                  'shard_idx': shard_params['shard_idx'],
@@ -300,8 +303,16 @@ class DSIR():
         parallelize(job, args, self.num_proc)
 
         # move the cache_dir to out_dir
-        shutil.move(str(cache_dir), str(out_dir))
-
+        if cache_dir != out_dir:
+            shutil.move(str(cache_dir), str(out_dir))
+        
+        # save indices of selected samples
+        selected_indices = np.argwhere(masks[0]) # returns tuples of [row_ind, col_ind]
+        selected_indices = [int(selected_indices[row, 0]) for row in range(selected_indices.shape[0])]
+        save_path = out_dir / "selected_indices.npy"
+        print(f"Save selected indices to {save_path}")
+        np.save(save_path, selected_indices)
+        
     def save(self, path: str) -> None:
         """Save parameters to save computation"""
         Path(path).parent.mkdir(parents=True, exist_ok=True)

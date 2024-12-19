@@ -1,7 +1,8 @@
 #!/bin/bash
 source config.sh
 
-source ${VIRTUAL_ENV}/bin/activate
+source $(conda info --base)/etc/profile.d/conda.sh
+conda activate HIR
 
 
 TASK=$1
