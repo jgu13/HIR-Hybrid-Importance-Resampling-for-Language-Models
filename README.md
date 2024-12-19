@@ -1,4 +1,4 @@
-# Data Selection for Language Models via Importance Resampling (DSIR)
+# Hybrid Importance Resampling for Language Models (HIR)
 
 This repository contains the HIR data selection tool for selecting relevant language model training data from any raw data source given a target dataset, as well as pre-filtered datasets and some pretrained models.
 
