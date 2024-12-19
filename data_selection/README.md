@@ -1,7 +1,7 @@
 # Usage
 In general, HIR aims to select data from the raw dataset that matches the feature distribution of the target data. Thus, the choice of feature space and importance estimator on this feature space can change the behavior of HIR for different use-cases. Extending the base DSIR class in `base.py` is simple - follow the example in `hashed_ngram_dsir.py`.
 
-### class data_selection.DSIR
+### class data_selection
 Base class for HIR.
 
 - `raw_datasets`: List of data paths
@@ -15,9 +15,9 @@ Base class for HIR.
 - `separate_targets`: whether to select data separately for each target and then join them. For example, when including two target datasets, one natural language dataset and one code, the most heavily upweighted data when `separate_targets=False` may skew towards documents with a mix of natural language and code, such as StackExchange. When `separate_targets=True`, two separate DSIR runs will occur in parallel, selecting a mixture of documents using each target
 - `target_proportions`: weighting across multiple targets if separate_targets=True. The proportions are on the document level. Set to None to weight by the size (in tokens) of each target dataset.
 
-#### compute_importance_weights(self) -> None:
-Compute importance weights on raw dataset with self.importance_estimator.
-Saves importance weights in self.log_importance_weights_dir / {index}.npy in chunks indexed by index.
+#### compute_ng_importance_weights(self) -> None:
+Compute importance weights based on n-grams statistics on raw dataset with self.importance_estimator.
+Saves importance weights in `save_path`.
 Also saves other per-example metadata (numpy arrays) in self.perexample_metadata_dir / {index}.npy."""
 
 #### resample(self, out_dir: str, num_to_sample: int, cache_dir: str = None, top_k: bool = False) -> None:
@@ -46,7 +46,20 @@ The main subclass we provide is DSIR with hashed n-gram features. This choice of
 - `separate_targets`: whether to select data separately for each target and then join them. For example, when including two target datasets, one natural language dataset and one code, the most heavily upweighted data when `separate_targets=False` may skew towards documents with a mix of natural language and code, such as StackExchange. When `separate_targets=True`, two separate DSIR runs will occur in parallel, selecting a mixture of documents using each target according to `target_proportions`.
 - `target_proportions`: weighting across multiple targets if separate_targets=True. The proportions are on the document level. Set to None to weight by the size in tokens of each target dataset
 
-#### fit_importance_estimator(self, num_tokens_to_fit: Union[str, int] = 'auto') -> None:
-Fit the importance estimator.
+#### fit_ng_importance_estimator(self, num_tokens_to_fit: Union[str, int] = 'auto') -> None:
+Fit the n-gram importance estimator.
 
 - `num_tokens_to_fit`: number of tokens to fit the raw dataset importance estimator on. Set to "all" to fit on all tokens, and "auto" to determine the number of tokens to fit on automatically (100k * num_buckets). Set to an integer to fit on that many tokens.
+
+
+#### fit_gmm_importance_estimator(self, chunk_size=10, raw_max_samples: Union[str, int] = "all", target_max_samples: Union[str, int] = "all", raw_text_emb_path=None,target_text_emb_path=None, checkpoint_dir=None, gmm_raw_checkpoint_path=None, gmm_target_checkpoint_path=None) -> None:
+Fit GMM models on raw and target dataset iteratively on chunks of text embeddings. Compute NN importance weights using sentenseTransformer.
+- `chunk_size`: number of text embeddings to be loaded at each iteration
+- `raw_max_samples`: total number of raw text embeddings to be used to fit GMM, only used when `raw_text_emb_path` are provided
+- `possible values` : integer or "all" when raw_max_samples == "all", all the samples in raw_text_emb_path are used.
+- `target_max_samples`: total number of target text embeddings to be used to fit GMM, only used when `target_text_emb_path` are provided possible values = integer or "all" when raw_max_samples == "all", all the samples in raw_text_emb_path are used
+- `raw_text_emb_path`: dirname to raw text embeddings
+- `target_text_emb_path`: dirname to target text embeddings
+- `checkpoint_dir`: folder to save trained gmm checkpoints
+- `gmm_raw_checkpoint_path`: path to load gmm checkpoints fitted on raw dataset
+- `gmm_target_checkpoint_path`: path to load gmm checkpoints fitted on target dataset
