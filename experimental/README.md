@@ -1,4 +1,4 @@
-# Code for the DSIR paper
+# Code for the DSIR paper (We use the sample experimental codes from DSIR paper)
 This directory has the code for preprocessing, data selection, pretraining, and fine-tuning for the experiments in the DSIR paper. Pre-filtered datasets and pre-trained models from the paper are linked in the README at the outer directory.
 
 ## Code for data selection
