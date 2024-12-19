@@ -58,10 +58,10 @@ See [Usage documentation](data_selection/README.md) for full details.
 Using 1 CPU node with 377GB RAM and 40 cores, we can select data from 1.4M subset of the Pile dataset in hours.
 The Pile dataset was first decompressed and placed onto the node's local file storage. The breakdown of timings for each step are:
 - *Fit n-gram importance estimator* (with `num_tokens_to_fit="auto"`): 10 hours
-- *Fit gmm importance estimator*: 1 hours
+- *Fit gmm importance estimator*: 7 hours
 - *Compute importance weights*: 0.615 second (ignored)
 - *Resample 40k documents* (with `cache_dir=None` and `out_dir` is a local storage location): 0.039 hours
-- *Total*: 11.039 hours
+- *Total*: 17.039 hours
 
 Subsequent resampling with the same target data is much faster with locally saved log importance weights.
 
