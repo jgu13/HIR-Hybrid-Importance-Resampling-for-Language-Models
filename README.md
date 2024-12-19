@@ -6,7 +6,7 @@ HIR is built for:
 - large-scale (trillion-token scale) data selection from large raw text dataset (Pile). 
 - selecting data that is distributed like a given target dataset (domain-specific data, Wikipedia, ...) using both low-level n-gram features and high-level sentence embeddings.
 
-![HIR figure](Figure1.pdf)
+![HIR figure](figure1.png)
 
 ## Quickstart
 
